@@ -1,10 +1,35 @@
-"""FastAPI application entry point."""
+import logging
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.redis import close_redis_connection
+from app.core.redis_client import redis_client
+
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler."""
+    # Startup
+    logger.info("Starting up application...")
+    await redis_client.connect()
+    logger.info("Redis connected")
+
+    yield
+
+    # Shutdown
+    logger.info("Shutting down application...")
+    await redis_client.disconnect()
+    logger.info("Redis disconnected")
+
 
 # Create FastAPI app
 app = FastAPI(
@@ -13,6 +38,7 @@ app = FastAPI(
     docs_url=f"{settings.API_V1_PREFIX}/docs",
     redoc_url=f"{settings.API_V1_PREFIX}/redoc",
     openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
+    lifespan=lifespan,
 )
 
 # CORS middleware
@@ -23,21 +49,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Startup event handler."""
-    print(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}")
-    print(f"Redis URL: {settings.REDIS_URL}")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Shutdown event handler."""
-    print("Shutting down...")
-    close_redis_connection()
-
 
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)

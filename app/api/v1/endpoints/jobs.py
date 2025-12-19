@@ -1,230 +1,115 @@
-"""Job management endpoints."""
-from fastapi import APIRouter, HTTPException, status
-from rq.job import Job as RQJob
+from typing import Optional, List
+from fastapi import APIRouter, HTTPException, status, Query, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.redis import get_queue, get_redis_connection
+from app.core.database import get_db
+from app.core.redis_client import get_redis, RedisClient
+from app.schemas.job import JobCreate, JobResponse, JobStats
+from app.services.job_service import JobService
 from app.models.job import JobStatus, JobType
-from app.schemas.job import (
-    DataProcessingJobCreate,
-    EmailJobCreate,
-    JobCreateResponse,
-    JobListResponse,
-    JobResponse,
-    ReportJobCreate,
-)
-from app.worker.tasks import (
-    generate_report_task,
-    process_data_task,
-    send_email_task,
-)
 
-router = APIRouter(prefix="/jobs", tags=["jobs"])
+router = APIRouter()
 
 
-@router.post("/email", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED)
-async def create_email_job(payload: EmailJobCreate):
+@router.post("/", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
+async def create_job(
+    job_in: JobCreate,
+    db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
+):
     """
-    Create email sending job.
+        Create and enqueue a new job.
 
-    Args:
-        payload: Email job details
-
-    Returns:
-        Job creation response
+        Example payload for DATA_PROCESSING:
+    ```json
+        {
+            "job_type": "data_processing",
+            "payload": {
+                "file_url": "https://example.com/data.csv",
+                "operation": "aggregate"
+            },
+            "priority": 5
+        }
+    ```
     """
-    queue = get_queue("default")
-
-    job = queue.enqueue(
-        send_email_task,
-        to=payload.to,
-        subject=payload.subject,
-        body=payload.body,
-        job_timeout=300,
-        result_ttl=3600,
-    )
-
-    return JobCreateResponse(
-        job_id=job.id,
-        status=JobStatus.QUEUED,
-        message="Email job created successfully"
-    )
-
-
-@router.post("/process-data", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED)
-async def create_data_processing_job(payload: DataProcessingJobCreate):
-    """
-    Create data processing job.
-
-    Args:
-        payload: Data processing job details
-
-    Returns:
-        Job creation response
-    """
-    queue = get_queue("default")
-
-    job = queue.enqueue(
-        process_data_task,
-        data_id=payload.data_id,
-        options=payload.options,
-        job_timeout=600,
-        result_ttl=3600,
-    )
-
-    return JobCreateResponse(
-        job_id=job.id,
-        status=JobStatus.QUEUED,
-        message="Data processing job created successfully"
-    )
-
-
-@router.post("/generate-report", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED)
-async def create_report_job(payload: ReportJobCreate):
-    """
-    Create report generation job.
-
-    Args:
-        payload: Report job details
-
-    Returns:
-        Job creation response
-    """
-    queue = get_queue("default")
-
-    job = queue.enqueue(
-        generate_report_task,
-        report_type=payload.report_type,
-        parameters=payload.parameters,
-        job_timeout=900,
-        result_ttl=7200,
-    )
-
-    return JobCreateResponse(
-        job_id=job.id,
-        status=JobStatus.QUEUED,
-        message="Report generation job created successfully"
-    )
+    job = await JobService.create_job(db, redis, job_in)
+    return job
 
 
 @router.get("/{job_id}", response_model=JobResponse)
-async def get_job_status(job_id: str):
-    """
-    Get job status.
+async def get_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """get job by id."""
+    job = await JobService.get_job(db, job_id)
 
-    Args:
-        job_id: Job ID
-
-    Returns:
-        Job details
-
-    Raises:
-        HTTPException: If job not found
-    """
-    redis_conn = get_redis_connection()
-
-    try:
-        job = RQJob.fetch(job_id, connection=redis_conn)
-    except Exception:
+    if not job:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {job_id} not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        )
+    return job
+
+
+@router.get("/", response_model=List[JobResponse])
+async def list_jobs(
+    status_filter: Optional[JobStatus] = Query(None, alias="status"),
+    type_filter: Optional[JobType] = Query(None, alias="type"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    List jobs with optional filters.
+
+    Query parameters:
+    - status: Filter by job status
+    - type: Filter by job type
+    - skip: Pagination offset
+    - limit: Max results per page
+    """
+    jobs = await JobService.list_jobs(
+        db, status=status_filter, job_type=type_filter, skip=skip, limit=limit
+    )
+    return jobs
+
+
+@router.post("/{job_id}/retry", response_model=JobResponse)
+async def retry_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
+):
+    """
+    Retry a failed job.
+
+    Conditions:
+    - Job must be in FAILED status
+    - Job must not have exceeded max retries
+    """
+    job = await JobService.retry_job(db, redis, job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Job cannot be retried (not failed or max retries exceeded)",
         )
 
-    # Map RQ job status to our JobStatus
-    status_mapping = {
-        "queued": JobStatus.QUEUED,
-        "started": JobStatus.STARTED,
-        "finished": JobStatus.FINISHED,
-        "failed": JobStatus.FAILED,
-        "canceled": JobStatus.CANCELED,
-    }
-
-    job_status = status_mapping.get(job.get_status(), JobStatus.QUEUED)
-
-    return JobResponse(
-        job_id=job.id,
-        job_type=JobType.EMAIL,  # TODO: Store job type in metadata
-        status=job_status,
-        created_at=job.created_at,
-        started_at=job.started_at,
-        ended_at=job.ended_at,
-        result=job.result,
-        error=job.exc_info if job.is_failed else None,
-        meta=job.meta,
-    )
+    return job
 
 
-@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def cancel_job(job_id: str):
+@router.get("/stats/summary", response_model=JobStats)
+async def get_job_stats(
+    db: AsyncSession = Depends(get_db), redis: RedisClient = Depends(get_redis)
+):
     """
-    Cancel a job.
-
-    Args:
-        job_id: Job ID
-
-    Raises:
-        HTTPException: If job not found
-    """
-    redis_conn = get_redis_connection()
-
-    try:
-        job = RQJob.fetch(job_id, connection=redis_conn)
-        job.cancel()
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {job_id} not found"
-        )
-
-
-@router.get("/", response_model=JobListResponse)
-async def list_jobs(limit: int = 50, offset: int = 0):
-    """
-    List all jobs.
-
-    Args:
-        limit: Maximum number of jobs to return
-        offset: Number of jobs to skip
+    Get job statistics and metrics.
 
     Returns:
-        List of jobs
+    - Total jobs
+    - Jobs by status
+    - Current queue depth
+    - Success rate
     """
-    queue = get_queue("default")
-    registry = queue.get_job_ids()
-
-    # Get jobs with pagination
-    job_ids = registry[offset:offset + limit]
-
-    redis_conn = get_redis_connection()
-    jobs = []
-
-    for job_id in job_ids:
-        try:
-            rq_job = RQJob.fetch(job_id, connection=redis_conn)
-
-            status_mapping = {
-                "queued": JobStatus.QUEUED,
-                "started": JobStatus.STARTED,
-                "finished": JobStatus.FINISHED,
-                "failed": JobStatus.FAILED,
-                "canceled": JobStatus.CANCELED,
-            }
-
-            jobs.append(JobResponse(
-                job_id=rq_job.id,
-                job_type=JobType.EMAIL,  # TODO: Store in metadata
-                status=status_mapping.get(rq_job.get_status(), JobStatus.QUEUED),
-                created_at=rq_job.created_at,
-                started_at=rq_job.started_at,
-                finished_at=rq_job.ended_at,
-                result=rq_job.result,
-                error=rq_job.exc_info if rq_job.is_failed else None,
-                meta=rq_job.meta,
-            ))
-        except Exception:
-            continue  # Skip jobs that can't be fetched
-
-    return JobListResponse(
-        jobs=jobs,
-        total=len(registry)
-    )
+    stats = await JobService.get_stats(db, redis)
+    return stats

@@ -1,7 +1,6 @@
-"""Job model for tracking async jobs."""
 from typing import Optional
 from datetime import datetime
-from sqlalchemy import String, Integer, Text, DateTime, Enum as SQLEnum
+from sqlalchemy import Integer, Text, DateTime, Enum as SQLEnum, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 import enum
 
@@ -10,6 +9,7 @@ from app.models.base import BaseModel
 
 class JobStatus(str, enum.Enum):
     """Job status enumeration."""
+
     PENDING = "pending"
     QUEUED = "queued"
     PROCESSING = "processing"
@@ -20,6 +20,7 @@ class JobStatus(str, enum.Enum):
 
 class JobType(str, enum.Enum):
     """Job type enumeration."""
+
     EMAIL = "email"
     DATA_PROCESSING = "data_processing"
     REPORT_GENERATION = "report_generation"
@@ -33,20 +34,15 @@ class Job(BaseModel):
     __tablename__ = "jobs"
 
     job_type: Mapped[JobType] = mapped_column(
-        SQLEnum(JobType),
-        nullable=False,
-        index=True
+        SQLEnum(JobType), nullable=False, index=True
     )
 
     status: Mapped[JobStatus] = mapped_column(
-        SQLEnum(JobStatus),
-        default=JobStatus.PENDING,
-        nullable=False,
-        index=True
+        SQLEnum(JobStatus), default=JobStatus.PENDING, nullable=False, index=True
     )
 
     # Job metadata
-    payload: Mapped[str] = mapped_column(Text, nullable=False)  # JSON string
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     result: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

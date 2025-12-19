@@ -1,28 +1,38 @@
-"""Health check endpoints."""
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
-from app.core.redis import get_redis_connection
+from app.core.database import get_db
+from app.core.redis_client import get_redis, RedisClient
 
-router = APIRouter(prefix="/health", tags=["health"])
+
+router = APIRouter()
 
 
-@router.get("/", status_code=status.HTTP_200_OK)
-async def health_check():
+@router.get("/health")
+async def health_check(
+    db: AsyncSession = Depends(get_db), redis: RedisClient = Depends(get_redis)
+):
     """
     Health check endpoint.
 
-    Returns:
-        Health status
+    Returns service health status.
     """
-    # Check Redis connection
+    # Check database
     try:
-        redis_conn = get_redis_connection()
-        redis_conn.ping()
-        redis_status = "healthy"
+        await db.execute(text("SELECT 1"))
+        db_status = "healthy"
+    except Exception as e:
+        db_status = f"unhealthy: {str(e)}"
+
+    # Check Redis
+    try:
+        if redis.redis:
+            await redis.redis.ping()
+            redis_status = "healthy"
+        else:
+            redis_status = "not connected"
     except Exception as e:
         redis_status = f"unhealthy: {str(e)}"
 
-    return {
-        "status": "ok",
-        "redis": redis_status,
-    }
+    return {"status": "ok", "database": db_status, "redis": redis_status}
