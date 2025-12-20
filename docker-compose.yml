@@ -51,7 +51,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    command: python -m app.workers.worker
+    command: python -m app.worker_main
     env_file:
       - .env
     depends_on:
@@ -61,6 +61,7 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+    restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest
