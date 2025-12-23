@@ -1,3 +1,4 @@
+import time
 import asyncio
 import logging
 from datetime import datetime
@@ -9,6 +10,12 @@ from app.models.job import JobStatus
 from app.services.job_service import JobService
 from app.schemas.job import JobUpdate
 from app.workers.task_handlers import TaskHandlers
+from app.core.metrics import (
+    worker_jobs_processed,
+    job_retry_counter,
+    job_duration_histogram,
+    active_workers_gauge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +37,7 @@ class AsyncWorker:
         self.concurrency = concurrency
         self.running = False
         self.active_tasks = set()
+        active_workers_gauge.inc()
 
     async def start(self):
         """Start the worker."""
@@ -62,6 +70,7 @@ class AsyncWorker:
         """Stop worker gracefully"""
         logger.info(f"Worker {self.worker_id} stopping...")
         self.running = False
+        active_workers_gauge.dec()
 
         # Wait for active task to complete
         if self.active_tasks:
@@ -111,7 +120,14 @@ class AsyncWorker:
                         raise ValueError(f"No handler for job type: {job_type}")
 
                     # Execute job
+                    start_time = time.time()
                     result = await handler(payload)
+                    duration = time.time() - start_time
+
+                    job_duration_histogram.labels(job_type=job_type).observe(duration)
+                    worker_jobs_processed.labels(
+                        worker_id=str(self.worker_id), status="completed"
+                    ).inc()
 
                     # Update job status to COPLETED
                     await JobService.update_job(
@@ -164,6 +180,7 @@ class AsyncWorker:
         """
         retry_count = job_data.get("retry_count", 0) + 1
         delay = settings.RETRY_DELAY * (2 ** (retry_count - 1))  # Exponential backoff
+        job_retry_counter.labels(job_type=job_type).inc()
 
         logger.info(
             f"Retrying job {job_data['id']} "

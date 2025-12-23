@@ -8,6 +8,11 @@ from app.models.job import Job, JobStatus, JobType
 from app.schemas.job import JobCreate, JobUpdate, JobStats
 from app.core.redis_client import RedisClient
 from app.core.config import settings
+from app.core.metrics import (
+    job_created_counter,
+    job_completed_counter,
+    queue_depth_gauge,
+)
 
 
 class JobService:
@@ -38,6 +43,7 @@ class JobService:
         db.add(job)
         await db.flush()
         await db.refresh(job)
+        job_created_counter.labels(job_type=job_in.job_type.value).inc()
 
         # Enqueue job in Redis
         job_data = {
@@ -111,6 +117,9 @@ class JobService:
 
         if job_update.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
             job.completed_at = datetime.utcnow()
+            job_completed_counter.labels(
+                job_type=job.job_type.value, status=job_update.status.value
+            ).inc()
         elif job_update.status == JobStatus.PROCESSING and not job.started_at:
             job.started_at = datetime.utcnow()
 
