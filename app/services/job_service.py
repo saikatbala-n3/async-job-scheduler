@@ -1,6 +1,5 @@
-import json
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -109,18 +108,15 @@ class JobService:
 
         update_job = job_update.model_dump(exclude_unset=True)
         for field, value in update_job.items():
-            if field == "result" and value:
-                setattr(job, field, json.dumps(value))
-            else:
-                setattr(job, field, value)
+            setattr(job, field, value)
 
         if job_update.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
             job_completed_counter.labels(
                 job_type=job.job_type.value, status=job_update.status.value
             ).inc()
         elif job_update.status == JobStatus.PROCESSING and not job.started_at:
-            job.started_at = datetime.utcnow()
+            job.started_at = datetime.now(timezone.utc)
 
         await db.flush()
         await db.refresh(job)

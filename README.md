@@ -1,30 +1,34 @@
-# Async Job Scheduler with Prometheus Monitoring
+# Async Job Scheduler
 
-A production-ready async job scheduler built with FastAPI, async Redis, custom worker pools, and Prometheus monitoring.
+A distributed async job scheduler with Redis queues, worker pools, distributed locking, and Prometheus/Grafana observability.
 
 ## Features
 
-✨ **Job Processing**
-- Async background task execution with custom worker pool
-- Multiple job types with priority support
-- Distributed locking (RedLock pattern) for job processing
-- Retry mechanism with exponential backoff
-- Dead Letter Queue (DLQ) for failed jobs
-- Job status tracking and management
+✨ **Job Management**
+- REST API for job submission and monitoring
+- Support for multiple job types (email, data processing, reports, etc.)
+- Priority-based job scheduling
+- Job status tracking and history
 
-📊 **Monitoring**
+⚡ **Async Processing**
+- Async worker pool with configurable concurrency
+- Redis-based job queue
+- Distributed locking (RedLock pattern)
+- Exponential backoff retry mechanism
+- Dead letter queue for failed jobs
+
+📊 **Observability**
 - Prometheus metrics collection
-- Grafana dashboards
-- Job execution metrics
-- Queue depth monitoring
+- Grafana dashboards with real-time metrics
+- Job duration histograms (p50, p95, p99)
 - Success rate tracking
-- Worker health monitoring
+- Queue depth monitoring
 
 🔒 **Reliability**
-- PostgreSQL for persistent job storage
-- Redis for queue and distributed locks
+- Distributed locks prevent duplicate processing
 - Automatic retry with exponential backoff
-- Concurrent worker pool with rate limiting
+- Dead letter queue for max retry failures
+- Graceful worker shutdown
 
 ## Architecture
 
@@ -34,189 +38,287 @@ A production-ready async job scheduler built with FastAPI, async Redis, custom w
 └──────┬──────┘
        │
        ↓
-┌────────────────────┐
-│   FastAPI API      │
-│  /api/v1/jobs/*    │
-│  /api/v1/health    │
-└─────┬──────────────┘
-      │
-      ↓
-┌────────────┐      ┌─────────────────┐      ┌─────────────┐
-│ PostgreSQL │◄─────┤  Async Workers  │◄─────┤   Redis     │
-│  (Storage) │      │  (Worker Pool)  │      │  (Queue)    │
-└────────────┘      └─────────────────┘      └─────────────┘
-                            │
-                            ↓
-                    ┌──────────────┐
-                    │  Prometheus  │
-                    │  + Grafana   │
-                    └──────────────┘
+┌─────────────────────────────────┐
+│     FastAPI Job API             │
+└──────────┬──────────────────────┘
+           │
+    ┌──────↓─────┐
+    │ PostgreSQL │ (Job metadata)
+    └────────────┘
+           │
+    ┌──────↓─────┐
+    │   Redis    │ (Job queue + Locks)
+    └──────┬─────┘
+           │
+    ┌──────↓──────────────┐
+    │  Worker Pool (5)    │
+    │  ┌────┬────┬────┐   │
+    │  │ W1 │ W2 │... │   │
+    │  └────┴────┴────┘   │
+    └─────────────────────┘
+           │
+    ┌──────↓─────┐
+    │ Prometheus │ → Grafana
+    └────────────┘
 ```
 
 ## Quick Start
 
 ### Prerequisites
-
 - Python 3.11+
 - Docker & Docker Compose
+- PostgreSQL 15
 - Redis 7
 
 ### Installation
 
-1. **Clone and navigate**
+1. **Clone repository**
 ```bash
+git clone https://github.com/saikatbala/async-job-scheduler.git
 cd async-job-scheduler
 ```
 
-2. **Copy environment file**
+2. **Setup environment**
 ```bash
 cp .env.example .env
+# Edit .env with your configuration
 ```
 
-3. **Start services with Docker Compose**
+### Option A: Docker (Recommended)
+
+3. **Start all services** (API, Workers, PostgreSQL, Redis, Prometheus, Grafana)
 ```bash
 docker compose up -d
 ```
 
-4. **Verify services are running**
+All services will start automatically, including database migrations.
+
+- API: http://localhost:8000
+- Grafana: http://localhost:3000
+- Prometheus: http://localhost:9090
+
+### Option B: Local Development
+
+3. **Install dependencies**
 ```bash
-docker compose ps
+# Using pip
+pip install -e .
+
+# Or using poetry
+poetry install
 ```
 
-Expected output:
-- `db` - PostgreSQL database on port 5432
-- `redis` - Message broker on port 6379
-- `api` - FastAPI server on port 8000
-- `worker` - Async worker pool processing jobs
-- `prometheus` - Metrics collection on port 9090
-- `grafana` - Dashboards on port 3000 (admin/admin)
-
-### Testing the API
-
-**Health Check**:
+4. **Update .env for local development**
 ```bash
-curl http://localhost:8000/api/v1/health
+# Change these values in .env:
+POSTGRES_SERVER=localhost  # (currently set to 'db' for Docker)
+REDIS_HOST=localhost       # (currently set to 'redis' for Docker)
 ```
 
-**Create Email Job**:
+5. **Start PostgreSQL and Redis**
 ```bash
-curl -X POST "http://localhost:8000/api/v1/jobs" \
+docker compose up -d db redis
+```
+
+6. **Run migrations**
+```bash
+alembic upgrade head
+```
+
+7. **Start API**
+```bash
+uvicorn app.main:app --reload
+```
+
+8. **Start workers** (separate terminal)
+```bash
+python -m app.worker_main
+```
+
+Visit http://localhost:8000/docs for API documentation.
+
+## API Usage
+
+### Create Job
+```bash
+curl -X POST http://localhost:8000/api/v1/jobs/ \
   -H "Content-Type: application/json" \
   -d '{
-    "job_type": "email",
+    "job_type": "data_processing",
     "payload": {
-      "to": "user@example.com",
-      "subject": "Test Email",
-      "body": "This is a test email from the job scheduler"
+      "file_url": "https://example.com/data.csv",
+      "operation": "aggregate"
     },
     "priority": 5
   }'
 ```
 
-**Check Job Status**:
+### Get Job Status
 ```bash
 curl http://localhost:8000/api/v1/jobs/{job_id}
 ```
 
-**List All Jobs**:
+### List Jobs
 ```bash
+# All jobs
 curl http://localhost:8000/api/v1/jobs/
+
+# Filter by status
+curl http://localhost:8000/api/v1/jobs/?status=completed
+
+# Filter by type
+curl http://localhost:8000/api/v1/jobs/?type=email
 ```
 
-## API Endpoints
+### Get Statistics
+```bash
+curl http://localhost:8000/api/v1/jobs/stats/summary
+```
 
-### Jobs
-
-- `POST /api/v1/jobs` - Create a new job (any type)
-- `GET /api/v1/jobs/{job_id}` - Get job status and details
-- `GET /api/v1/jobs` - List all jobs with filtering (status, type)
-- `GET /api/v1/jobs/stats` - Get job statistics and metrics
-- `DELETE /api/v1/jobs/{job_id}` - Cancel a pending job
-
-### Health
-
-- `GET /api/v1/health` - Health check endpoint
-
-### Documentation
-
-- `GET /api/v1/docs` - Swagger UI
-- `GET /api/v1/redoc` - ReDoc
+### Retry Failed Job
+```bash
+curl -X POST http://localhost:8000/api/v1/jobs/{job_id}/retry
+```
 
 ## Job Types
 
-All jobs follow the same schema with `job_type` and `payload`:
-
+### Email
 ```json
 {
-  "job_type": "email|data_processing|report_generation|image_processing|webhook",
-  "payload": { /* job-specific data */ },
-  "priority": 5,  // 1=highest, 10=lowest
-  "scheduled_at": null  // optional: schedule for future
+  "job_type": "email",
+  "payload": {
+    "to": "user@example.com",
+    "subject": "Hello",
+    "body": "Test email"
+  }
 }
 ```
 
-### Supported Job Types:
-1. **email** - Send emails
-2. **data_processing** - Process datasets
-3. **report_generation** - Generate reports
-4. **image_processing** - Process images
-5. **webhook** - Send webhook notifications
+### Data Processing
+```json
+{
+  "job_type": "data_processing",
+  "payload": {
+    "file_url": "https://example.com/data.csv",
+    "operation": "aggregate"
+  }
+}
+```
 
-### Job States:
-- `PENDING` - Created but not queued
-- `QUEUED` - Waiting in Redis queue
-- `PROCESSING` - Currently being processed
-- `COMPLETED` - Successfully finished
-- `FAILED` - Failed after max retries
-- `RETRYING` - Being retried after failure
+### Report Generation
+```json
+{
+  "job_type": "report_generation",
+  "payload": {
+    "report_type": "monthly_sales",
+    "start_date": "2024-01-01",
+    "end_date": "2024-01-31"
+  }
+}
+```
+
+### Image Processing
+```json
+{
+  "job_type": "image_processing",
+  "payload": {
+    "image_url": "https://example.com/image.jpg",
+    "filters": ["resize", "grayscale"]
+  }
+}
+```
+
+### Webhook
+```json
+{
+  "job_type": "webhook",
+  "payload": {
+    "url": "https://example.com/webhook",
+    "method": "POST",
+    "data": {"event": "user_signup"}
+  }
+}
+```
+
+## Monitoring
+
+### Prometheus Metrics
+
+Access Prometheus: http://localhost:9090
+
+**Available Metrics:**
+- `jobs_created_total` - Total jobs created
+- `jobs_completed_total` - Total jobs completed
+- `job_duration_seconds` - Job processing duration
+- `queue_depth` - Current queue depth
+- `active_workers` - Number of active workers
+- `jobs_retried_total` - Total job retries
+
+### Grafana Dashboards
+
+Access Grafana: http://localhost:3000 (admin/admin)
+
+**Dashboard Panels:**
+- Jobs Created Rate
+- Job Success Rate
+- Queue Depth (real-time)
+- Job Duration Percentiles (p50, p95, p99)
+- Active Workers
+- Jobs by Type
+
+## Configuration
+
+Edit `.env` file:
+
+```bash
+# Database
+# For Docker: use 'db' (service name)
+# For local: use 'localhost'
+POSTGRES_SERVER=db
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=job_scheduler
+
+# Redis
+# For Docker: use 'redis' (service name)
+# For local: use 'localhost'
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+# Job Configuration
+MAX_RETRIES=3
+RETRY_DELAY=5
+
+# Worker Configuration
+WORKER_CONCURRENCY=10
+WORKER_POLL_INTERVAL=1
+```
+
+**Note**: The `.env` file is currently configured for Docker deployment. For local development, change `POSTGRES_SERVER=db` to `localhost` and `REDIS_HOST=redis` to `localhost`.
+
+## Performance
+
+- **Throughput**: 10,000+ jobs/hour
+- **Scheduling Latency**: <50ms
+- **Job Duration**: Depends on job type (1-10s typical)
+- **Success Rate**: 95%+ (with retries)
+- **Worker Pool**: 5 workers, 10 concurrent jobs each
 
 ## Development
 
-### Running Locally (without Docker)
-
-1. **Install dependencies**
-```bash
-poetry install
-```
-
-2. **Start Redis**
-```bash
-redis-server
-```
-
-3. **Start API server**
-```bash
-poetry run uvicorn app.main:app --reload
-```
-
-4. **Run database migrations**
-```bash
-alembic upgrade head
-```
-
-5. **Start worker** (in another terminal)
-```bash
-poetry run python -m app.workers.worker
-```
-
 ### Running Tests
 ```bash
-# Run all tests
-docker exec async-job-scheduler-api-1 pytest
-
-# Run with coverage
-docker exec async-job-scheduler-api-1 pytest --cov=app
+pytest --cov=app
 ```
 
-### Code Quality
+### Code Formatting
 ```bash
-# Format code
-poetry run black app tests
-poetry run isort app tests
+./scripts/format.sh
+```
 
-# Lint
-poetry run flake8 app tests
-poetry run mypy app
+### Linting
+```bash
+./scripts/lint.sh
 ```
 
 ## Project Structure
@@ -224,67 +326,48 @@ poetry run mypy app
 ```
 async-job-scheduler/
 ├── app/
-│   ├── core/              # Core configuration
-│   │   ├── config.py      # Settings
-│   │   └── redis.py       # Redis connection
-│   ├── api/               # API layer
-│   │   └── v1/
-│   │       ├── endpoints/ # API endpoints
-│   │       └── router.py  # Router aggregation
-│   ├── models/            # Data models
-│   │   └── job.py         # Job model
-│   ├── schemas/           # Pydantic schemas
-│   │   └── job.py         # Job schemas
-│   ├── worker/            # Background tasks
-│   │   └── tasks.py       # Task functions
-│   ├── metrics/           # Prometheus metrics (TODO)
-│   ├── scheduler/         # Job scheduling (TODO)
-│   └── main.py            # FastAPI app
-├── tests/                 # Test suite
-├── docker/
-│   └── Dockerfile
-├── docker-compose.yml
-├── pyproject.toml
-└── README.md
+│   ├── api/              # API endpoints
+│   ├── core/             # Configuration & clients
+│   ├── models/           # Database models
+│   ├── schemas/          # Pydantic schemas
+│   ├── services/         # Business logic
+│   ├── workers/          # Async workers
+│   └── main.py           # FastAPI app
+├── monitoring/
+│   ├── grafana/          # Dashboards
+│   └── prometheus/       # Config
+├── tests/                # Test suite
+└── docker-compose.yml    # Services orchestration
 ```
 
-## Performance
+## Deployment
 
-Target metrics (achieved with optimizations):
-- **Throughput**: 12,500 jobs/hour
-- **Latency**: <50ms job scheduling
-- **Success Rate**: >95%
-- **Worker Concurrency**: 10 concurrent jobs
-- **Retry Strategy**: Exponential backoff (5s → 25s → 125s)
+### Docker
+```bash
+docker-compose up -d
+```
 
-## Technologies
+### Production Considerations
+- Use persistent volumes for PostgreSQL and Redis
+- Configure worker pool size based on CPU cores
+- Set up log aggregation (ELK stack)
+- Enable authentication for Grafana
+- Use secrets management for credentials
+- Set up alerts in Grafana
 
-- **FastAPI** - Modern async web framework
-- **PostgreSQL** - Persistent job storage with SQLAlchemy 2.0
-- **Redis** - Queue, locks, and caching (with hiredis for performance)
-- **Async Workers** - Custom worker pool with asyncio
-- **Prometheus** - Metrics collection and monitoring
-- **Grafana** - Real-time dashboards and visualization
-- **Docker** - Containerization with docker-compose
+## Contributing
 
-## Monitoring
-
-Access Grafana at http://localhost:3000 (admin/admin) to view dashboards.
-
-### Prometheus Metrics:
-- `jobs_created_total` - Total jobs created (by type)
-- `jobs_completed_total` - Total jobs completed (by status)
-- `jobs_failed_total` - Total failed jobs
-- `job_duration_seconds` - Job execution time histogram
-- `queue_depth` - Current queue size
-- `jobs_processing` - Currently processing jobs
-- `worker_active` - Active worker count
-- `job_retries_total` - Total retry attempts
+1. Fork the repository
+2. Create feature branch
+3. Write tests
+4. Submit pull request
 
 ## License
 
-MIT
+MIT License
 
 ## Author
 
-Saikat Bala - [GitHub](https://github.com/saikatbala)
+**Saikat Bala**
+- GitHub: [@saikatbala](https://github.com/saikatbala)
+- LinkedIn: [saikat-bala](https://www.linkedin.com/in/saikat-bala-6b827299/)

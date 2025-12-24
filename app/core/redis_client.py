@@ -1,4 +1,3 @@
-"""Redis client wrapper for job queue operations."""
 import asyncio
 import json
 from typing import Optional, Any
@@ -20,7 +19,7 @@ class RedisClient:
             str(settings.REDIS_URL),
             encoding="utf-8",
             decode_responses=True,
-            max_connections=50
+            max_connections=100,  # Increase from 50
         )
         self.redis = Redis(connection_pool=self.pool)
 
@@ -73,12 +72,7 @@ class RedisClient:
         return await self.redis.llen(queue_name)
 
     # Key-Value Operations
-    async def set(
-        self,
-        key: str,
-        value: Any,
-        expire: Optional[int] = None
-    ) -> bool:
+    async def set(self, key: str, value: Any, expire: Optional[int] = None) -> bool:
         """
         Set key-value with optional expiration.
 
@@ -112,10 +106,7 @@ class RedisClient:
 
     # Lock Operations (for distributed locking)
     async def acquire_lock(
-        self,
-        lock_name: str,
-        timeout: int = 10,
-        blocking_timeout: Optional[int] = None
+        self, lock_name: str, timeout: int = 10, blocking_timeout: Optional[int] = None
     ) -> bool:
         """
         Acquire distributed lock.
@@ -133,6 +124,7 @@ class RedisClient:
         if blocking_timeout:
             # Blocking acquire
             import time
+
             end_time = time.time() + blocking_timeout
             while time.time() < end_time:
                 if await self.redis.set(lock_key, "1", nx=True, ex=timeout):

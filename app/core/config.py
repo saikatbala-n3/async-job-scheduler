@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     RETRY_DELAY: int = 5  # seconds
 
     # Worker Configuration
-    WORKER_CONCURRENCY: int = 10
+    WORKER_CONCURRENCY: int = 20  # Increase from 10
     WORKER_POLL_INTERVAL: int = 1  # seconds
 
     # CORS Settings

@@ -113,3 +113,26 @@ async def get_job_stats(
     """
     stats = await JobService.get_stats(db, redis)
     return stats
+
+
+@router.post("/batch", response_model=List[JobResponse])
+async def create_jobs_batch(
+    jobs: List[JobCreate],
+    db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
+):
+    """
+    Create multiple jobs in batch.
+
+    Maximum 100 jobs per request.
+    """
+    if len(jobs) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 jobs per batch")
+
+    created_jobs = []
+
+    for job_in in jobs:
+        job = await JobService.create_job(db, redis, job_in)
+        created_jobs.append(job)
+
+    return created_jobs
