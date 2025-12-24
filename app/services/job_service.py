@@ -11,7 +11,6 @@ from app.core.config import settings
 from app.core.metrics import (
     job_created_counter,
     job_completed_counter,
-    queue_depth_gauge,
 )
 
 
