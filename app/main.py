@@ -1,72 +1,37 @@
 import logging
-from fastapi import FastAPI, Response
 from contextlib import asynccontextmanager
-from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from app.api.v1.router import api_router
-from app.core.config import settings
-from app.core.redis_client import redis_client
+from fastapi import FastAPI
+from prometheus_client import make_asgi_app
 
+from app.core import queue
+from app.core.database import Base, engine
+from app.jobs.models import Job  # registers model before create_all
+from app.jobs.routes import router as jobs_router
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler."""
-    # Startup
-    logger.info("Starting up application...")
-    await redis_client.connect()
-    logger.info("Redis connected")
-
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await queue.connect()
     yield
-
-    # Shutdown
-    logger.info("Shutting down application...")
-    await redis_client.disconnect()
-    logger.info("Redis disconnected")
+    await queue.disconnect()
+    await engine.dispose()
 
 
-# Create FastAPI app
 app = FastAPI(
-    title=settings.PROJECT_NAME,
-    version=settings.VERSION,
-    docs_url=f"{settings.API_V1_PREFIX}/docs",
-    redoc_url=f"{settings.API_V1_PREFIX}/redoc",
-    openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
+    title="Async Job Scheduler",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.include_router(jobs_router)
+app.mount("/metrics", make_asgi_app())
 
 
-@app.get("/metrics")
-async def metrics():
-    """Prometheus metrics endpoint."""
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
-# Include API router
-app.include_router(api_router, prefix=settings.API_V1_PREFIX)
-
-
-@app.get("/")
-async def root():
-    """Root endpoint."""
-    return {
-        "message": f"Welcome to {settings.PROJECT_NAME}",
-        "version": settings.VERSION,
-        "docs": f"{settings.API_V1_PREFIX}/docs",
-    }
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}

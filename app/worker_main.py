@@ -1,62 +1,40 @@
 import asyncio
 import logging
 import signal
-from app.core.redis_client import redis_client
+
+from prometheus_client import start_http_server
+
+from app.core import queue
+from app.core.database import Base, engine
+from app.jobs.models import Job
 from app.workers.worker import WorkerPool
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Global worker pool and shutdown flag
-worker_pool = None
-shutdown_requested = False
-
-
-def signal_handler(signum, frame):
-    """Handle shutdown signals."""
-    global shutdown_requested
-    logger.info(f"Received signal {signum}, initiating shutdown...")
-    shutdown_requested = True
 
 
 async def main():
-    """Main worker entry point."""
-    global worker_pool
+    start_http_server(8001)  # exposes worker metrics for Prometheus scraping
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await queue.connect()
 
-    try:
-        # Connect to Redis
-        logger.info("Connecting to Redis...")
-        await redis_client.connect()
+    pool = WorkerPool()
+    await pool.start()
 
-        # Create and start worker pool
-        worker_pool = WorkerPool(redis_client, num_workers=5)
-        await worker_pool.start()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(pool)))
 
-        # Keep running until shutdown signal or interrupt
-        logger.info("Worker pool running. Press Ctrl+C to stop.")
-        while not shutdown_requested:
-            await asyncio.sleep(0.5)
-        logger.info("Shutdown signal received, stopping workers...")
+    await asyncio.Event().wait()
 
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-    finally:
-        # Cleanup
-        if worker_pool:
-            await worker_pool.stop()
-        await redis_client.disconnect()
-        logger.info("Worker shutdown complete")
+
+async def shutdown(pool: WorkerPool):
+    logger.info("Shutdown signal received")
+    await pool.stop()
+    await queue.disconnect()
+    await engine.dispose()
 
 
 if __name__ == "__main__":
-    # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    # Run main loop
     asyncio.run(main())
