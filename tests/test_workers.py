@@ -1,51 +1,27 @@
-import pytest
-
-# import asyncio
-# from app.workers.worker import AsyncWorker
-from app.workers.task_handlers import TaskHandlers
-from app.core.redis_client import RedisClient
+from app.workers.task_handlers import handle_unreliable, handle_work
 
 
-@pytest.mark.asyncio
-async def test_email_handler():
-    """Test email task handler."""
-    payload = {"to": "test@example.com", "subject": "Test Email"}
-
-    result = await TaskHandlers.handle_email(payload)
-
-    assert result["status"] == "sent"
-    assert result["to"] == "test@example.com"
+async def test_handle_work_succeeds():
+    result = await handle_work({"duration": 0.01})
+    assert result["status"] == "done"
 
 
-@pytest.mark.asyncio
-async def test_data_processing_handler():
-    """Test data processing handler."""
-    payload = {"file_url": "https://example.com/data.csv", "operation": "aggregate"}
+async def test_handle_unreliable_sometimes_fails():
+    """Run 20 times — statistically should see both success and failure."""
+    results = []
+    for _ in range(20):
+        try:
+            await handle_unreliable({})
+            results.append("success")
+        except RuntimeError:
+            results.append("failure")
+    assert "success" in results
+    assert "failure" in results
 
-    result = await TaskHandlers.handle_data_processing(payload)
 
-    assert result["status"] == "processed"
-    assert result["file_url"] == payload["file_url"]
-    assert "rows_processed" in result
+async def test_handle_work_duration_respected():
+    import time
 
-
-@pytest.mark.asyncio
-async def test_worker_processing(redis_client: RedisClient):
-    """Test worker job processing."""
-    # This is an integration test
-    # In real scenario, you'd use fakeredis for unit testing
-
-    job_data = {
-        "id": "test-job-1",
-        "job_type": "email",
-        "payload": {"to": "test@example.com", "subject": "Test"},
-        "priority": 5,
-        "retry_count": 0,
-    }
-
-    # Enqueue job
-    await redis_client.enqueue("test:queue", job_data)
-
-    # Verify job is in queue
-    queue_length = await redis_client.queue_length("test:queue")
-    assert queue_length == 1
+    start = time.perf_counter()
+    await handle_work({"duration": 0.1})
+    assert time.perf_counter() - start >= 0.1
