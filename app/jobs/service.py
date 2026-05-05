@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import queue
 from app.core.config import settings
-from app.metrics import job_created, queue_depth
+from app.metrics import jobs_created, queue_depth
 from app.jobs.schemas import JobCreate, JobStats
 from app.jobs.models import Job, JobStatus, JobType
 
@@ -27,7 +27,7 @@ async def create_job(db: AsyncSession, job_in: JobCreate):
         },
     )
 
-    job_created.labels(job_type=job_in.job_type.value).inc()
+    jobs_created.labels(job_type=job_in.job_type.value).inc()
     queue_depth.set(await queue.queue_length(settings.job_queue))
     return job
 

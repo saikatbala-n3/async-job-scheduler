@@ -3,9 +3,9 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str = (
-        "postgresql+asyncpg://scheduler:scheduler@localhost:5432/job_scheduler"
+        "postgresql+asyncpg://scheduler:scheduler@postgres_n3:5432/job_scheduler"
     )
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = "redis://redis_n3:6379/0"
 
     job_queue: str = "jobs:queue"
     job_dlq: str = "jobs:dlq"
